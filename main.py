@@ -29,7 +29,8 @@ MARKETPLACE_KNOWLEDGE_DOMAINS = [
 
 MARKETPLACE_ASSISTANT_PROMPT = """
 Ты экспертный Telegram-консультант по маркетплейсам OZON и Wildberries.
-Отвечай на русском языке, коротко и по делу.
+Отвечай на русском языке живо, дружелюбно и по-человечески, как опытный коллега в чате.
+Не звучи как сухая инструкция или робот. Можно коротко поддержать собеседника, но без лишней воды.
 
 Помогай по темам:
 - создание и оптимизация карточек товаров;
@@ -38,6 +39,10 @@ MARKETPLACE_ASSISTANT_PROMPT = """
 - FBO/FBS/realFBS, поставки, остатки, логистика и возвраты;
 - реклама, продвижение, аналитика и отчеты;
 - типовые ошибки селлеров и план действий.
+
+На обычные разговорные сообщения тоже отвечай нормально: здоровайся, поддерживай беседу,
+уточняй, чем помочь, и мягко возвращай разговор к OZON/Wildberries, если это уместно.
+Если человек пишет неформально, отвечай в таком же спокойном человеческом стиле.
 
 По вопросам OZON используй официальную базу знаний и документацию:
 - seller-edu.ozon.ru;
@@ -51,7 +56,8 @@ MARKETPLACE_ASSISTANT_PROMPT = """
 в личном кабинете продавца или официальной справке маркетплейса.
 
 Если вопрос не про OZON, Wildberries, e-commerce или продажи на маркетплейсах,
-вежливо скажи, что специализируешься на OZON и WB, и предложи переформулировать вопрос.
+не отмахивайся сразу. Если это обычная беседа, ответь по-человечески.
+Если просят экспертный ответ вне твоей темы, кратко скажи, что лучше всего помогаешь по OZON и WB.
 Если для точного ответа не хватает данных, задай 1-3 уточняющих вопроса.
 Не выдумывай актуальные тарифы, правила и даты; если данные могут измениться,
 посоветуй сверить их в личном кабинете маркетплейса или официальной справке.
@@ -118,6 +124,9 @@ async def marketplace_question_handler(message: Message, bot: Bot) -> None:
         await message.answer("OPENAI_API_KEY is not set. Add it to .env or hosting environment variables.")
         return
 
+    if not await should_answer_message(message, bot):
+        return
+
     question = message.text.strip()
     if not question:
         return
@@ -125,7 +134,7 @@ async def marketplace_question_handler(message: Message, bot: Bot) -> None:
     await bot.send_chat_action(chat_id=message.chat.id, action="typing")
 
     try:
-        response, used_web_search = await ask_openai(question)
+        response, _used_web_search = await ask_openai(question)
     except OpenAIError as error:
         logging.exception("OpenAI API request failed: %s", error)
         await message.answer("Не удалось получить ответ от OpenAI. Попробуйте еще раз чуть позже.")
@@ -138,15 +147,31 @@ async def marketplace_question_handler(message: Message, bot: Bot) -> None:
     citations = collect_url_citations(response)
     if citations and "Источники" not in answer:
         answer = f"{answer}\n\nИсточники:\n" + "\n".join(f"- {url}" for url in citations[:5])
-    elif MARKETPLACE_WEB_SEARCH_ENABLED and not used_web_search:
-        answer = (
-            f"{answer}\n\n"
-            "Примечание: официальный поиск по базам OZON/WB временно не сработал, "
-            "ответ дан без проверки источников."
-        )
 
     for chunk in split_telegram_message(answer):
         await message.answer(chunk, parse_mode=None)
+
+
+async def should_answer_message(message: Message, bot: Bot) -> bool:
+    if message.chat.type == "private":
+        return True
+
+    bot_user = await bot.get_me()
+    text = message.text or ""
+    text_lower = text.lower()
+    mention = f"@{bot_user.username.lower()}" if bot_user.username else ""
+
+    if mention and mention in text_lower:
+        return True
+
+    if message.reply_to_message and message.reply_to_message.from_user:
+        return message.reply_to_message.from_user.id == bot_user.id
+
+    bot_names = [bot_user.first_name]
+    if bot_user.username:
+        bot_names.append(bot_user.username)
+
+    return any(name and name.lower() in text_lower for name in bot_names)
 
 
 async def ask_openai(question: str):
