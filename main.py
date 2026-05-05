@@ -16,7 +16,7 @@ load_dotenv()
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-5.2")
+OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 
 MARKETPLACE_ASSISTANT_PROMPT = """
 Ты экспертный Telegram-консультант по маркетплейсам OZON и Wildberries.
@@ -110,8 +110,8 @@ async def marketplace_question_handler(message: Message, bot: Bot) -> None:
             input=question,
             max_output_tokens=900,
         )
-    except OpenAIError:
-        logging.exception("OpenAI API request failed")
+    except OpenAIError as error:
+        logging.exception("OpenAI API request failed: %s", error)
         await message.answer("Не удалось получить ответ от OpenAI. Попробуйте еще раз чуть позже.")
         return
 
