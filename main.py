@@ -2,6 +2,7 @@ import asyncio
 import logging
 import os
 import sys
+import time
 
 from aiogram import Bot, Dispatcher, F, html
 from aiogram.client.default import DefaultBotProperties
@@ -26,6 +27,9 @@ MARKETPLACE_KNOWLEDGE_DOMAINS = [
     "docs.ozon.com",
     "seller.wildberries.ru",
 ]
+MAX_DIALOG_MESSAGES = 12
+DIALOG_TTL_SECONDS = 60 * 60
+dialog_memory: dict[str, dict] = {}
 
 MARKETPLACE_ASSISTANT_PROMPT = """
 Ты экспертный Telegram-консультант по маркетплейсам OZON и Wildberries.
@@ -79,6 +83,7 @@ start_keyboard = InlineKeyboardMarkup(
 
 @dp.message(CommandStart())
 async def command_start_handler(message: Message) -> None:
+    dialog_memory.pop(get_dialog_key(message), None)
     user_name = message.from_user.full_name if message.from_user else "друг"
     await message.answer(
         f"Привет, {html.bold(user_name)}!\n"
@@ -131,10 +136,16 @@ async def marketplace_question_handler(message: Message, bot: Bot) -> None:
     if not question:
         return
 
+    dialog_key = get_dialog_key(message)
+    history = get_dialog_history(dialog_key)
+    if is_new_question(question, history):
+        history = []
+        dialog_memory.pop(dialog_key, None)
+
     await bot.send_chat_action(chat_id=message.chat.id, action="typing")
 
     try:
-        response, _used_web_search = await ask_openai(question)
+        response, _used_web_search = await ask_openai(question, history)
     except OpenAIError as error:
         logging.exception("OpenAI API request failed: %s", error)
         await message.answer("Не удалось получить ответ от OpenAI. Попробуйте еще раз чуть позже.")
@@ -150,6 +161,8 @@ async def marketplace_question_handler(message: Message, bot: Bot) -> None:
 
     for chunk in split_telegram_message(answer):
         await message.answer(chunk, parse_mode=None)
+
+    save_dialog_turn(dialog_key, question, answer)
 
 
 async def should_answer_message(message: Message, bot: Bot) -> bool:
@@ -170,8 +183,8 @@ async def should_answer_message(message: Message, bot: Bot) -> bool:
     return False
 
 
-async def ask_openai(question: str):
-    request = build_openai_request(question)
+async def ask_openai(question: str, history: list[dict]):
+    request = build_openai_request(question, history)
 
     if not MARKETPLACE_WEB_SEARCH_ENABLED:
         return await openai_client.responses.create(**request), False
@@ -194,17 +207,85 @@ async def ask_openai(question: str):
         return await openai_client.responses.create(**request), False
 
 
-def build_openai_request(question: str) -> dict:
+def build_openai_request(question: str, history: list[dict]) -> dict:
     return {
         "model": OPENAI_MODEL,
         "instructions": MARKETPLACE_ASSISTANT_PROMPT,
-        "input": (
-            "Ответь на вопрос продавца маркетплейса. "
-            "Для вопросов по OZON и Wildberries используй официальные источники из разрешённых доменов.\n\n"
-            f"Вопрос: {question}"
-        ),
+        "input": build_openai_input(question, history),
         "max_output_tokens": 1200,
     }
+
+
+def build_openai_input(question: str, history: list[dict]) -> list[dict]:
+    messages = [
+        {
+            "role": "developer",
+            "content": (
+                "Ответь на вопрос продавца маркетплейса. "
+                "Для вопросов по OZON и Wildberries используй официальные источники из разрешённых доменов. "
+                "Учитывай историю диалога ниже. Если новое сообщение похоже на уточнение, продолжай предыдущую тему. "
+                "Если это явно новый вопрос, отвечай как на новую тему."
+            ),
+        }
+    ]
+    messages.extend(history)
+    messages.append({"role": "user", "content": question})
+    return messages
+
+
+def get_dialog_key(message: Message) -> str:
+    thread_id = getattr(message, "message_thread_id", None)
+    if thread_id is not None:
+        return f"{message.chat.id}:{thread_id}"
+    if message.chat.type == "private" and message.from_user:
+        return f"private:{message.from_user.id}"
+    return f"chat:{message.chat.id}"
+
+
+def get_dialog_history(dialog_key: str) -> list[dict]:
+    memory = dialog_memory.get(dialog_key)
+    if not memory:
+        return []
+
+    if time.time() - memory["updated_at"] > DIALOG_TTL_SECONDS:
+        dialog_memory.pop(dialog_key, None)
+        return []
+
+    return memory["messages"]
+
+
+def save_dialog_turn(dialog_key: str, question: str, answer: str) -> None:
+    history = get_dialog_history(dialog_key)
+    history.extend(
+        [
+            {"role": "user", "content": question},
+            {"role": "assistant", "content": answer},
+        ]
+    )
+    dialog_memory[dialog_key] = {
+        "updated_at": time.time(),
+        "messages": history[-MAX_DIALOG_MESSAGES:],
+    }
+
+
+def is_new_question(question: str, history: list[dict]) -> bool:
+    if not history:
+        return True
+
+    normalized = question.strip().lower()
+    new_topic_markers = (
+        "новый вопрос",
+        "другой вопрос",
+        "другая тема",
+        "сменим тему",
+        "теперь про",
+        "а теперь про",
+        "забудь",
+        "начнем заново",
+        "начнём заново",
+    )
+
+    return normalized.startswith(new_topic_markers)
 
 
 def collect_url_citations(response) -> list[str]:
