@@ -167,11 +167,7 @@ async def should_answer_message(message: Message, bot: Bot) -> bool:
     if message.reply_to_message and message.reply_to_message.from_user:
         return message.reply_to_message.from_user.id == bot_user.id
 
-    bot_names = [bot_user.first_name]
-    if bot_user.username:
-        bot_names.append(bot_user.username)
-
-    return any(name and name.lower() in text_lower for name in bot_names)
+    return False
 
 
 async def ask_openai(question: str):
