@@ -24,6 +24,7 @@ BOT_TOKEN=your_telegram_bot_token
 OPENAI_API_KEY=your_openai_api_key
 OPENAI_MODEL=gpt-4o-mini
 OZON_WEB_SEARCH_ENABLED=true
+MARKETPLACE_WEB_SEARCH_ENABLED=true
 ```
 
 4. Запустите бота:
@@ -40,10 +41,11 @@ python main.py
 - `Кнопка 2` - подсказка по продажам и продвижению
 - Любой текст - AI-ответ по OZON и Wildberries
 
-По вопросам OZON бот использует web search OpenAI с ограничением на официальные домены:
+По вопросам OZON и Wildberries бот использует web search OpenAI с ограничением на официальные домены:
 
 - `seller-edu.ozon.ru`
 - `docs.ozon.com`
+- `seller.wildberries.ru`
 
 ## Групповые чаты
 

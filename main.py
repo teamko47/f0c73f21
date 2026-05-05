@@ -17,8 +17,15 @@ load_dotenv()
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
-OZON_WEB_SEARCH_ENABLED = os.getenv("OZON_WEB_SEARCH_ENABLED", "true").lower() == "true"
-OZON_KNOWLEDGE_DOMAINS = ["seller-edu.ozon.ru", "docs.ozon.com"]
+MARKETPLACE_WEB_SEARCH_ENABLED = os.getenv(
+    "MARKETPLACE_WEB_SEARCH_ENABLED",
+    os.getenv("OZON_WEB_SEARCH_ENABLED", "true"),
+).lower() == "true"
+MARKETPLACE_KNOWLEDGE_DOMAINS = [
+    "seller-edu.ozon.ru",
+    "docs.ozon.com",
+    "seller.wildberries.ru",
+]
 
 MARKETPLACE_ASSISTANT_PROMPT = """
 Ты экспертный Telegram-консультант по маркетплейсам OZON и Wildberries.
@@ -35,16 +42,20 @@ MARKETPLACE_ASSISTANT_PROMPT = """
 По вопросам OZON используй официальную базу знаний и документацию:
 - seller-edu.ozon.ru;
 - docs.ozon.com.
-Сначала опирайся на найденные официальные источники OZON, затем давай практический вывод.
+
+По вопросам Wildberries используй официальный справочный центр продавцов:
+- seller.wildberries.ru/instructions.
+
+Сначала опирайся на найденные официальные источники OZON или Wildberries, затем давай практический вывод.
 Если в официальных источниках нет точного ответа, прямо скажи об этом и предложи, где проверить
-в личном кабинете продавца или справке Ozon.
+в личном кабинете продавца или официальной справке маркетплейса.
 
 Если вопрос не про OZON, Wildberries, e-commerce или продажи на маркетплейсах,
 вежливо скажи, что специализируешься на OZON и WB, и предложи переформулировать вопрос.
 Если для точного ответа не хватает данных, задай 1-3 уточняющих вопроса.
 Не выдумывай актуальные тарифы, правила и даты; если данные могут измениться,
 посоветуй сверить их в личном кабинете маркетплейса или официальной справке.
-Когда используешь официальные страницы OZON, в конце добавляй блок "Источники" с URL.
+Когда используешь официальные страницы OZON или Wildberries, в конце добавляй блок "Источники" с URL.
 """
 
 dp = Dispatcher()
@@ -138,17 +149,17 @@ async def ask_openai(question: str):
         "instructions": MARKETPLACE_ASSISTANT_PROMPT,
         "input": (
             "Ответь на вопрос продавца маркетплейса. "
-            "Для вопросов по OZON используй только официальные источники OZON из разрешённых доменов.\n\n"
+            "Для вопросов по OZON и Wildberries используй официальные источники из разрешённых доменов.\n\n"
             f"Вопрос: {question}"
         ),
         "max_output_tokens": 1200,
     }
 
-    if OZON_WEB_SEARCH_ENABLED:
+    if MARKETPLACE_WEB_SEARCH_ENABLED:
         request["tools"] = [
             {
                 "type": "web_search",
-                "filters": {"allowed_domains": OZON_KNOWLEDGE_DOMAINS},
+                "filters": {"allowed_domains": MARKETPLACE_KNOWLEDGE_DOMAINS},
             }
         ]
         request["tool_choice"] = "auto"
