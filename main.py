@@ -17,6 +17,8 @@ load_dotenv()
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+OZON_WEB_SEARCH_ENABLED = os.getenv("OZON_WEB_SEARCH_ENABLED", "true").lower() == "true"
+OZON_KNOWLEDGE_DOMAINS = ["seller-edu.ozon.ru", "docs.ozon.com"]
 
 MARKETPLACE_ASSISTANT_PROMPT = """
 Ты экспертный Telegram-консультант по маркетплейсам OZON и Wildberries.
@@ -30,11 +32,19 @@ MARKETPLACE_ASSISTANT_PROMPT = """
 - реклама, продвижение, аналитика и отчеты;
 - типовые ошибки селлеров и план действий.
 
+По вопросам OZON используй официальную базу знаний и документацию:
+- seller-edu.ozon.ru;
+- docs.ozon.com.
+Сначала опирайся на найденные официальные источники OZON, затем давай практический вывод.
+Если в официальных источниках нет точного ответа, прямо скажи об этом и предложи, где проверить
+в личном кабинете продавца или справке Ozon.
+
 Если вопрос не про OZON, Wildberries, e-commerce или продажи на маркетплейсах,
 вежливо скажи, что специализируешься на OZON и WB, и предложи переформулировать вопрос.
 Если для точного ответа не хватает данных, задай 1-3 уточняющих вопроса.
 Не выдумывай актуальные тарифы, правила и даты; если данные могут измениться,
 посоветуй сверить их в личном кабинете маркетплейса или официальной справке.
+Когда используешь официальные страницы OZON, в конце добавляй блок "Источники" с URL.
 """
 
 dp = Dispatcher()
@@ -104,12 +114,7 @@ async def marketplace_question_handler(message: Message, bot: Bot) -> None:
     await bot.send_chat_action(chat_id=message.chat.id, action="typing")
 
     try:
-        response = await openai_client.responses.create(
-            model=OPENAI_MODEL,
-            instructions=MARKETPLACE_ASSISTANT_PROMPT,
-            input=question,
-            max_output_tokens=900,
-        )
+        response = await ask_openai(question)
     except OpenAIError as error:
         logging.exception("OpenAI API request failed: %s", error)
         await message.answer("Не удалось получить ответ от OpenAI. Попробуйте еще раз чуть позже.")
@@ -119,8 +124,47 @@ async def marketplace_question_handler(message: Message, bot: Bot) -> None:
     if not answer:
         answer = "OpenAI вернул пустой ответ. Попробуйте переформулировать вопрос."
 
+    citations = collect_url_citations(response)
+    if citations and "Источники" not in answer:
+        answer = f"{answer}\n\nИсточники:\n" + "\n".join(f"- {url}" for url in citations[:5])
+
     for chunk in split_telegram_message(answer):
         await message.answer(chunk, parse_mode=None)
+
+
+async def ask_openai(question: str):
+    request = {
+        "model": OPENAI_MODEL,
+        "instructions": MARKETPLACE_ASSISTANT_PROMPT,
+        "input": (
+            "Ответь на вопрос продавца маркетплейса. "
+            "Для вопросов по OZON используй только официальные источники OZON из разрешённых доменов.\n\n"
+            f"Вопрос: {question}"
+        ),
+        "max_output_tokens": 1200,
+    }
+
+    if OZON_WEB_SEARCH_ENABLED:
+        request["tools"] = [
+            {
+                "type": "web_search",
+                "filters": {"allowed_domains": OZON_KNOWLEDGE_DOMAINS},
+            }
+        ]
+        request["tool_choice"] = "auto"
+
+    return await openai_client.responses.create(**request)
+
+
+def collect_url_citations(response) -> list[str]:
+    urls = []
+    for output_item in getattr(response, "output", []) or []:
+        for content_item in getattr(output_item, "content", []) or []:
+            for annotation in getattr(content_item, "annotations", []) or []:
+                url = getattr(annotation, "url", None)
+                if url and url not in urls:
+                    urls.append(url)
+    return urls
 
 
 def split_telegram_message(text: str, limit: int = 4000) -> list[str]:
