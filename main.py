@@ -125,7 +125,7 @@ async def marketplace_question_handler(message: Message, bot: Bot) -> None:
     await bot.send_chat_action(chat_id=message.chat.id, action="typing")
 
     try:
-        response = await ask_openai(question)
+        response, used_web_search = await ask_openai(question)
     except OpenAIError as error:
         logging.exception("OpenAI API request failed: %s", error)
         await message.answer("Не удалось получить ответ от OpenAI. Попробуйте еще раз чуть позже.")
@@ -138,13 +138,43 @@ async def marketplace_question_handler(message: Message, bot: Bot) -> None:
     citations = collect_url_citations(response)
     if citations and "Источники" not in answer:
         answer = f"{answer}\n\nИсточники:\n" + "\n".join(f"- {url}" for url in citations[:5])
+    elif MARKETPLACE_WEB_SEARCH_ENABLED and not used_web_search:
+        answer = (
+            f"{answer}\n\n"
+            "Примечание: официальный поиск по базам OZON/WB временно не сработал, "
+            "ответ дан без проверки источников."
+        )
 
     for chunk in split_telegram_message(answer):
         await message.answer(chunk, parse_mode=None)
 
 
 async def ask_openai(question: str):
-    request = {
+    request = build_openai_request(question)
+
+    if not MARKETPLACE_WEB_SEARCH_ENABLED:
+        return await openai_client.responses.create(**request), False
+
+    web_request = {
+        **request,
+        "tools": [
+            {
+                "type": "web_search",
+                "filters": {"allowed_domains": MARKETPLACE_KNOWLEDGE_DOMAINS},
+            }
+        ],
+        "tool_choice": "auto",
+    }
+
+    try:
+        return await openai_client.responses.create(**web_request), True
+    except OpenAIError as error:
+        logging.exception("OpenAI web search request failed, retrying without web search: %s", error)
+        return await openai_client.responses.create(**request), False
+
+
+def build_openai_request(question: str) -> dict:
+    return {
         "model": OPENAI_MODEL,
         "instructions": MARKETPLACE_ASSISTANT_PROMPT,
         "input": (
@@ -154,17 +184,6 @@ async def ask_openai(question: str):
         ),
         "max_output_tokens": 1200,
     }
-
-    if MARKETPLACE_WEB_SEARCH_ENABLED:
-        request["tools"] = [
-            {
-                "type": "web_search",
-                "filters": {"allowed_domains": MARKETPLACE_KNOWLEDGE_DOMAINS},
-            }
-        ]
-        request["tool_choice"] = "auto"
-
-    return await openai_client.responses.create(**request)
 
 
 def collect_url_citations(response) -> list[str]:
